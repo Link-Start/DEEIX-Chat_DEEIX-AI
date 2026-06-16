@@ -147,6 +147,7 @@ type SendMessageInput struct {
 type SendMessageResult struct {
 	UserMessage         model.Message
 	AssistantMessage    model.Message
+	MetadataRefreshHint string
 	Billable            bool
 	UpstreamID          uint
 	UpstreamName        string
@@ -162,6 +163,7 @@ type SendMessageResult struct {
 	CacheWrite1hTokens  int64
 	ServerSideToolUsage map[string]int64
 	LatencyMS           int64
+	StartedAt           time.Time
 }
 
 // MessageFeedbackResult 返回反馈后的当前状态（内部传输，不携带序列化标记）。
@@ -253,6 +255,7 @@ func NewServiceWithRuntime(
 			InvalidFileReference: ErrInvalidFileReference,
 			InvalidFileName:      ErrInvalidFileName,
 			FileNotFound:         ErrFileNotFound,
+			FileInUse:            ErrFileInUse,
 			StorageQuotaExceeded: ErrStorageQuotaExceeded,
 			FileTooLarge:         ErrFileTooLarge,
 			MIMEBlocked:          ErrMIMEBlocked,

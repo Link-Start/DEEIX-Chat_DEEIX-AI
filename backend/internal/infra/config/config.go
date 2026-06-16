@@ -194,10 +194,12 @@ type yamlConfig struct {
 			TempStore     string `yaml:"temp_store"`
 		} `yaml:"sqlite"`
 		Redis struct {
-			Addr     string `yaml:"addr"`
-			Username string `yaml:"username"`
-			Password string `yaml:"password"`
-			DB       int    `yaml:"db"`
+			Addr                  string `yaml:"addr"`
+			Username              string `yaml:"username"`
+			Password              string `yaml:"password"`
+			DB                    int    `yaml:"db"`
+			TLSEnabled            *bool  `yaml:"tls_enabled"`
+			TLSInsecureSkipVerify *bool  `yaml:"tls_insecure_skip_verify"`
 		} `yaml:"redis"`
 	} `yaml:"database"`
 	Cache struct {
@@ -234,6 +236,7 @@ type yamlConfig struct {
 			Endpoint     string  `yaml:"endpoint"`
 			Headers      string  `yaml:"headers"`
 			Insecure     *bool   `yaml:"insecure"`
+			Protocol     string  `yaml:"protocol"`
 			SamplingRate float64 `yaml:"sampling_rate"`
 		} `yaml:"tracing"`
 	} `yaml:"observability"`
@@ -277,6 +280,8 @@ type Config struct {
 	RedisUsername                string
 	RedisPassword                string
 	RedisDB                      int
+	RedisTLSEnabled              bool
+	RedisTLSInsecureSkipVerify   bool
 	StorageBackend               string
 	StorageRootDir               string
 	StorageS3Endpoint            string
@@ -306,6 +311,7 @@ type Config struct {
 	OTelExporterOTLPEndpoint     string
 	OTelExporterOTLPHeaders      string
 	OTelExporterOTLPInsecure     bool
+	OTelExporterOTLPProtocol     string
 	OTelSamplingRate             float64
 
 	// ── 动态配置（由 DB 种子初始化默认值，settings.RuntimeSettings.ApplyTo 覆盖） ──
@@ -322,6 +328,7 @@ type Config struct {
 	ThirdPartyLoginEnabled       bool
 	EmailRegistrationEnabled     bool
 	EmailVerificationEnabled     bool
+	PasswordResetEnabled         bool
 	EmailRegistrationDomains     string
 	EmailRegistrationNoAlias     bool
 	AutoLinkVerifiedEmail        bool
@@ -493,6 +500,8 @@ func Load() Config {
 		RedisUsername:                envOr("REDIS_USERNAME", yc.Database.Redis.Username, ""),
 		RedisPassword:                envOr("REDIS_PASSWORD", yc.Database.Redis.Password, ""),
 		RedisDB:                      envOrInt("REDIS_DB", yc.Database.Redis.DB, 0),
+		RedisTLSEnabled:              envOrBoolPtr("REDIS_TLS_ENABLED", yc.Database.Redis.TLSEnabled, false),
+		RedisTLSInsecureSkipVerify:   envOrBoolPtr("REDIS_TLS_INSECURE_SKIP_VERIFY", yc.Database.Redis.TLSInsecureSkipVerify, false),
 		StorageBackend:               envOr("STORAGE_BACKEND", yc.Storage.Backend, "local"),
 		StorageRootDir:               envOrPath("STORAGE_ROOT_DIR", yc.Storage.Local.RootDir, "./storage", yc.sourceDir),
 		StorageS3Endpoint:            envOr("STORAGE_S3_ENDPOINT", yc.Storage.S3.Endpoint, ""),
@@ -522,6 +531,7 @@ func Load() Config {
 		OTelExporterOTLPEndpoint:     envOr("OTEL_EXPORTER_OTLP_ENDPOINT", yc.Observability.Tracing.Endpoint, ""),
 		OTelExporterOTLPHeaders:      envOr("OTEL_EXPORTER_OTLP_HEADERS", yc.Observability.Tracing.Headers, ""),
 		OTelExporterOTLPInsecure:     envOrBoolPtr("OTEL_EXPORTER_OTLP_INSECURE", yc.Observability.Tracing.Insecure, false),
+		OTelExporterOTLPProtocol:     normalizeOTelExporterOTLPProtocol(envOr("OTEL_EXPORTER_OTLP_PROTOCOL", yc.Observability.Tracing.Protocol, "grpc")),
 		OTelSamplingRate:             envOrFloat("OTEL_TRACES_SAMPLER_ARG", envOrFloat("OTEL_SAMPLING_RATE", yc.Observability.Tracing.SamplingRate, 1), 1),
 
 		// 动态配置默认值（会被 DB 覆盖）
@@ -537,6 +547,7 @@ func Load() Config {
 		ThirdPartyLoginEnabled:            true,
 		EmailRegistrationEnabled:          true,
 		EmailVerificationEnabled:          false,
+		PasswordResetEnabled:              false,
 		EmailRegistrationDomains:          "",
 		EmailRegistrationNoAlias:          false,
 		AutoLinkVerifiedEmail:             true,
@@ -838,6 +849,15 @@ func normalizeCacheDriver(value string) string {
 		return "memory"
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func normalizeOTelExporterOTLPProtocol(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "http", "http/protobuf":
+		return "http"
+	default:
+		return "grpc"
 	}
 }
 
