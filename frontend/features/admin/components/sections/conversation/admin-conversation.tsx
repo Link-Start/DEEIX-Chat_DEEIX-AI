@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { resolveAccessToken } from "@/shared/auth/resolve-access-token";
+import { downloadBlob, readExportManifest } from "@/shared/lib/export-download";
 import {
   SettingsFieldInset,
   SettingsFieldItem,
@@ -34,6 +35,7 @@ import { exportAllConversations, getAdminReferenceData, listAdminSettings, patch
 import {
   applyConversationDefaults,
   buildConversationSettingsFields,
+  CONVERSATION_DEFAULT_MODEL_SYSTEM,
   CONVERSATION_TASK_MODEL_FOLLOW,
   fieldID,
   flattenConversationSettings,
@@ -257,6 +259,22 @@ generationConfig.safetySettings.threshold`}
     "generationConfig.imageConfig.aspectRatio",
     "generationConfig.imageConfig.imageSize"
   ],
+  "gemini_interactions": [
+    "generation_config.temperature",
+    "generation_config.top_p",
+    "generation_config.max_output_tokens",
+    "generation_config.thinking_level",
+    "response_format.type",
+    "response_format.aspect_ratio",
+    "response_format.image_size",
+    "response_format.mime_type",
+    "responseFormat.type",
+    "responseFormat.aspectRatio",
+    "responseFormat.imageSize",
+    "responseFormat.mimeType",
+    "generationConfig.videoConfig.task",
+    "generation_config.video_config.task"
+  ],
   "xai_image": [
     "aspect_ratio",
     "n",
@@ -315,7 +333,7 @@ generationConfig.safetySettings.threshold`}
             <h4 className="text-sm font-medium text-foreground">{t("guide.protocolTitle")}</h4>
             <p className="text-xs">{t("guide.protocolDescription")}</p>
             <div className="flex flex-wrap gap-1.5">
-              {["default", "openai_chat_completions", "openrouter_chat_completions", "openai_responses", "openrouter_responses", "openai_image_generations", "openai_image_edits", "google_image_generation", "xai_image", "xai_image_edits", "anthropic_messages", "xai_responses", "gemini_generate_content"].map((item) => (
+              {["default", "openai_chat_completions", "openrouter_chat_completions", "openai_responses", "openrouter_responses", "openai_image_generations", "openai_image_edits", "google_image_generation", "gemini_interactions", "xai_image", "xai_image_edits", "anthropic_messages", "xai_responses", "gemini_generate_content"].map((item) => (
                 <code key={item} className="rounded-md bg-muted/60 px-2 py-1 text-xs text-foreground">{item}</code>
               ))}
             </div>
@@ -348,11 +366,18 @@ export function AdminConversationSettingsPage() {
   const [saving, setSaving] = React.useState(false);
   const [settingsMap, setSettingsMap] = React.useState<Record<string, string>>({});
   const [savedMap, setSavedMap] = React.useState<Record<string, string>>({});
-  const [modelOptions, setModelOptions] = React.useState<ModelOption[]>(() =>
+  const [taskModelOptions, setTaskModelOptions] = React.useState<ModelOption[]>(() =>
     buildTaskModelOptions({
       models: [],
       followLabel: t("taskModel.follow"),
       followValue: CONVERSATION_TASK_MODEL_FOLLOW,
+    }),
+  );
+  const [defaultModelOptions, setDefaultModelOptions] = React.useState<ModelOption[]>(() =>
+    buildTaskModelOptions({
+      models: [],
+      followLabel: t("defaultModel.systemRecommended"),
+      followValue: CONVERSATION_DEFAULT_MODEL_SYSTEM,
     }),
   );
   const [exporting, setExporting] = React.useState(false);
@@ -363,15 +388,13 @@ export function AdminConversationSettingsPage() {
       const token = await resolveAccessToken();
       if (!token) return;
       const { blob, fileName } = await exportAllConversations(token);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = fileName;
-      link.rel = "noopener";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      const manifest = await readExportManifest(blob);
+      downloadBlob(blob, fileName);
+      if (manifest && (!manifest.complete || (manifest.failed ?? 0) > 0)) {
+        toast.warning(t("dataExport.partial", { exported: manifest.exported ?? 0, failed: manifest.failed ?? 0 }));
+      } else if (manifest) {
+        toast.success(t("dataExport.success", { count: manifest.exported ?? 0 }));
+      }
     } catch {
       toast.error(t("dataExport.failed"));
     } finally {
@@ -396,8 +419,14 @@ export function AdminConversationSettingsPage() {
         followLabel: t("taskModel.follow"),
         followValue: CONVERSATION_TASK_MODEL_FOLLOW,
       });
+      const nextDefaultModelOptions = buildTaskModelOptions({
+        models: referenceData?.models ?? [],
+        followLabel: t("defaultModel.systemRecommended"),
+        followValue: CONVERSATION_DEFAULT_MODEL_SYSTEM,
+      });
       const flattened = flattenConversationSettings(grouped);
-      setModelOptions(nextModelOptions);
+      setTaskModelOptions(nextModelOptions);
+      setDefaultModelOptions(nextDefaultModelOptions);
       setSettingsMap(flattened);
       setSavedMap(flattened);
     } catch (error) {
@@ -526,7 +555,19 @@ export function AdminConversationSettingsPage() {
           t={t}
         />
       ) : undefined;
-    const content = id === "chat.conversation_task_model" || id === "chat.compact_task_model" ? (
+    const content = id === "chat.conversation_default_model" ? (
+      <TaskModelField
+        id={id}
+        label={field.label}
+        description={field.description}
+        value={settingsMap[id] ?? ""}
+        fallbackValue={CONVERSATION_DEFAULT_MODEL_SYSTEM}
+        dirty={(settingsMap[id] ?? "") !== (savedMap[id] ?? "")}
+        disabled={loading || saving}
+        modelOptions={defaultModelOptions}
+        onChange={(value) => setSettingsMap((prev) => ({ ...prev, [id]: value }))}
+      />
+    ) : id === "chat.conversation_task_model" || id === "chat.compact_task_model" ? (
       <TaskModelField
         id={id}
         label={field.label}
@@ -535,7 +576,7 @@ export function AdminConversationSettingsPage() {
         fallbackValue={CONVERSATION_TASK_MODEL_FOLLOW}
         dirty={(settingsMap[id] ?? "") !== (savedMap[id] ?? "")}
         disabled={loading || saving}
-        modelOptions={modelOptions}
+        modelOptions={taskModelOptions}
         onChange={(value) => setSettingsMap((prev) => ({ ...prev, [id]: value }))}
       />
     ) : (

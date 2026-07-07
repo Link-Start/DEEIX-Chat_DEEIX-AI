@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { resolveAccessToken } from "@/shared/auth/resolve-access-token";
 import { cancelMessageGeneration, listMessagesPage, resumeMessageGenerationStream } from "@/shared/api/conversation";
 import { buildMediaImagePreviewMarkdown } from "@/features/chat/model/media-image-preview";
+import { upsertLiveUpstreamThinkTrace } from "@/features/chat/model/upstream-think-store";
 import type { MessageDTO } from "@/shared/api/conversation.types";
 
 const MESSAGE_PAGE_SIZE = 100;
@@ -351,19 +352,20 @@ export function useChatData(
           },
           onMediaStatus: (event) => {
             const status = event.status.trim();
+            const contentType = event.content_type === "video" ? "video" : "image";
             const activityLabel =
               status === "queued"
-                ? tSubmit("mediaStatus.queued")
+                ? tSubmit(contentType === "video" ? "mediaStatus.videoQueued" : "mediaStatus.queued")
                 : status === "running"
-                  ? tSubmit("mediaStatus.running")
+                  ? tSubmit(contentType === "video" ? "mediaStatus.videoRunning" : "mediaStatus.running")
                   : status === "saving_artifact"
-                    ? tSubmit("mediaStatus.savingArtifact")
+                    ? tSubmit(contentType === "video" ? "mediaStatus.videoSavingArtifact" : "mediaStatus.savingArtifact")
                     : event.message.trim() || status;
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((message) =>
                 message.runID === pendingRunID && message.role === "assistant" && message.status === "pending"
-                  ? { ...message, activityLabel, contentType: "image" }
+                  ? { ...message, activityLabel, contentType }
                   : message,
               ),
             }));
@@ -412,14 +414,7 @@ export function useChatData(
             }));
           },
           onUpstreamThinkDelta: (event) => {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((message) =>
-                message.runID === pendingRunID && message.role === "assistant" && message.status === "pending"
-                  ? { ...message, processTrace: event.trace }
-                  : message,
-              ),
-            }));
+            upsertLiveUpstreamThinkTrace(pendingRunID, event);
           },
           onUsage: (event) => {
             setState((prev) => ({

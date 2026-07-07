@@ -424,6 +424,17 @@ export type MediaImageRequest = {
   branchReason?: "default" | "retry" | "edit";
 };
 
+export type MediaVideoRequest = {
+  prompt: string;
+  model?: string;
+  options?: ConversationOptions;
+  clientRunID?: string;
+  fileIDs?: string[];
+  parentMessagePublicID?: string;
+  sourceMessagePublicID?: string;
+  branchReason?: "default" | "retry" | "edit";
+};
+
 export type SendMessageResult = {
   userMessage: MessageDTO;
   assistantMessage: MessageDTO;
@@ -452,6 +463,14 @@ export type StreamMessageEvent =
       type: "upstream_think_delta";
       seq?: number;
       status: string;
+      title?: string;
+      summary?: string;
+      stage?: string;
+      roundID?: string;
+      eventID?: string;
+      kind?: ReasoningDeltaDTO["kind"] | string;
+      delta?: string;
+      contentMarkdown?: string;
       block?: TraceBlockDTO;
       trace?: MessageProcessTraceDTO;
       reasoning?: ReasoningDeltaDTO;
@@ -475,6 +494,7 @@ export type StreamMessageEvent =
       seq?: number;
       status: string;
       message: string;
+      content_type?: string;
     }
   | {
       type: "media_image_delta";

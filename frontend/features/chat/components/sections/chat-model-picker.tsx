@@ -32,6 +32,13 @@ type ChatModelPickerProps = {
   onModelChange: (platformModelName: string) => void;
 };
 
+const MODEL_MENU_COLLISION_PADDING = 24;
+const DESKTOP_MODEL_MENU_WIDTH = 224;
+const DESKTOP_MODEL_SUBMENU_GAP = 8;
+const DESKTOP_MODEL_MENU_MIN_SCROLL_HEIGHT = 96;
+const DESKTOP_VENDOR_MENU_VERTICAL_CHROME = 40;
+const DESKTOP_SUBMENU_VERTICAL_CHROME = 12;
+
 function resolveVendorGroups(modelOptions: ChatModelOption[]) {
   const groupMap = new Map<string, ChatModelOption[]>();
   for (const item of modelOptions) {
@@ -102,12 +109,17 @@ function ChatModelTriggerSkeleton() {
 
 function ModelMenuScrollContainer({
   children,
+  maxHeight,
+  onScroll,
 }: {
   children: React.ReactNode;
+  maxHeight?: number;
+  onScroll?: () => void;
 }) {
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const [hasMoreAbove, setHasMoreAbove] = React.useState(false);
   const [hasMoreBelow, setHasMoreBelow] = React.useState(false);
+  const resolvedMaxHeight = Number.isFinite(maxHeight) ? Math.max(0, maxHeight ?? 0) : undefined;
 
   const updateScrollHints = React.useCallback(() => {
     const viewport = viewportRef.current;
@@ -134,14 +146,25 @@ function ModelMenuScrollContainer({
       observer.observe(viewport.firstElementChild);
     }
     return () => observer.disconnect();
-  }, [children, updateScrollHints]);
+  }, [children, resolvedMaxHeight, updateScrollHints]);
+
+  const handleScroll = React.useCallback(() => {
+    updateScrollHints();
+    onScroll?.();
+  }, [onScroll, updateScrollHints]);
 
   return (
     <div className="relative">
       <div
         ref={viewportRef}
-        className="max-h-[min(20rem,var(--radix-popover-content-available-height))] overflow-y-auto overscroll-contain pr-0 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        onScroll={updateScrollHints}
+        style={resolvedMaxHeight === undefined ? undefined : { maxHeight: resolvedMaxHeight }}
+        className={cn(
+          "overflow-y-auto overscroll-contain pr-0 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+          resolvedMaxHeight === undefined
+            ? "max-h-[min(20rem,var(--model-menu-scroll-max-height,var(--radix-popover-content-available-height)))]"
+            : null,
+        )}
+        onScroll={handleScroll}
       >
         {children}
       </div>
@@ -431,6 +454,15 @@ export function ChatModelPicker({
   const [open, setOpen] = React.useState(false);
   const [activeVendorKey, setActiveVendorKey] = React.useState("");
   const [mobileVendorKey, setMobileVendorKey] = React.useState<string | null>(null);
+  const [desktopSubmenuSide, setDesktopSubmenuSide] = React.useState<"right" | "left">("right");
+  const [desktopSubmenuTop, setDesktopSubmenuTop] = React.useState(0);
+  const [desktopSubmenuWidth, setDesktopSubmenuWidth] = React.useState(DESKTOP_MODEL_MENU_WIDTH);
+  const [desktopVendorListMaxHeight, setDesktopVendorListMaxHeight] = React.useState(320);
+  const [desktopSubmenuListMaxHeight, setDesktopSubmenuListMaxHeight] = React.useState(320);
+  const desktopMenuRootRef = React.useRef<HTMLDivElement | null>(null);
+  const desktopVendorMenuRef = React.useRef<HTMLDivElement | null>(null);
+  const desktopSubmenuRef = React.useRef<HTMLDivElement | null>(null);
+  const desktopVendorItemRefs = React.useRef(new Map<string, HTMLButtonElement>());
   const selectedModel = React.useMemo(
     () => modelOptions.find((item) => item.platformModelName === selectedPlatformModelName) ?? null,
     [modelOptions, selectedPlatformModelName],
@@ -453,6 +485,7 @@ export function ChatModelPicker({
     () => vendorGroups.find((group) => group.vendor === activeDesktopVendorKey) ?? vendorGroups[0] ?? null,
     [activeDesktopVendorKey, vendorGroups],
   );
+  const hasDesktopModelSubmenu = Boolean(activeDesktopVendorGroup?.items.length);
   const mobileVendorGroup = React.useMemo(
     () => vendorGroups.find((group) => group.vendor === mobileVendorKey) ?? null,
     [mobileVendorKey, vendorGroups],
@@ -500,6 +533,109 @@ export function ChatModelPicker({
       setMobileVendorKey(null);
     }
   }, [isMobile, open]);
+
+  const updateDesktopSubmenuMetrics = React.useCallback(() => {
+    if (!open || isMobile || !hasDesktopModelSubmenu) {
+      setDesktopSubmenuSide("right");
+      setDesktopSubmenuTop(0);
+      setDesktopSubmenuWidth(DESKTOP_MODEL_MENU_WIDTH);
+      setDesktopVendorListMaxHeight(320);
+      setDesktopSubmenuListMaxHeight(320);
+      return;
+    }
+
+    const menuRoot = desktopMenuRootRef.current;
+    const vendorMenu = desktopVendorMenuRef.current;
+    const submenu = desktopSubmenuRef.current;
+    const activeVendorButton = activeDesktopVendorGroup
+      ? desktopVendorItemRefs.current.get(activeDesktopVendorGroup.vendor)
+      : null;
+    if (!menuRoot || !vendorMenu || !activeVendorButton) {
+      return;
+    }
+
+    const menuRootRect = menuRoot.getBoundingClientRect();
+    const vendorMenuRect = vendorMenu.getBoundingClientRect();
+    const submenuRect = submenu?.getBoundingClientRect();
+    const activeVendorRect = activeVendorButton.getBoundingClientRect();
+    const viewportLeft = MODEL_MENU_COLLISION_PADDING;
+    const viewportRight = window.innerWidth - MODEL_MENU_COLLISION_PADDING;
+    const viewportTop = MODEL_MENU_COLLISION_PADDING;
+    const viewportBottom = window.innerHeight - MODEL_MENU_COLLISION_PADDING;
+    const viewportHeight = Math.max(DESKTOP_MODEL_MENU_MIN_SCROLL_HEIGHT, viewportBottom - viewportTop);
+    const rightAvailableWidth = Math.max(0, viewportRight - vendorMenuRect.right - DESKTOP_MODEL_SUBMENU_GAP);
+    const leftAvailableWidth = Math.max(0, vendorMenuRect.left - viewportLeft - DESKTOP_MODEL_SUBMENU_GAP);
+    const nextSubmenuSide =
+      rightAvailableWidth >= DESKTOP_MODEL_MENU_WIDTH || rightAvailableWidth >= leftAvailableWidth
+        ? "right"
+        : "left";
+    const nextSubmenuWidth = Math.max(
+      DESKTOP_MODEL_MENU_MIN_SCROLL_HEIGHT,
+      Math.min(
+        DESKTOP_MODEL_MENU_WIDTH,
+        nextSubmenuSide === "right" ? rightAvailableWidth : leftAvailableWidth,
+      ),
+    );
+    const nextVendorListMaxHeight = Math.max(
+      DESKTOP_MODEL_MENU_MIN_SCROLL_HEIGHT,
+      viewportBottom - Math.max(vendorMenuRect.top, viewportTop) - DESKTOP_VENDOR_MENU_VERTICAL_CHROME,
+    );
+    const submenuHeight = submenuRect?.height ?? 320;
+    const submenuOuterHeight = Math.min(submenuHeight, viewportHeight);
+    const maxViewportTop = Math.max(viewportTop, viewportBottom - submenuOuterHeight);
+    const viewportAlignedTop = Math.min(Math.max(activeVendorRect.top, viewportTop), maxViewportTop);
+    const nextSubmenuTop = Math.max(0, viewportAlignedTop - menuRootRect.top);
+    const actualSubmenuViewportTop = menuRootRect.top + nextSubmenuTop;
+    const nextSubmenuListMaxHeight = Math.max(
+      DESKTOP_MODEL_MENU_MIN_SCROLL_HEIGHT,
+      viewportBottom - actualSubmenuViewportTop - DESKTOP_SUBMENU_VERTICAL_CHROME,
+    );
+    setDesktopSubmenuSide(nextSubmenuSide);
+    setDesktopSubmenuTop(nextSubmenuTop);
+    setDesktopSubmenuWidth(nextSubmenuWidth);
+    setDesktopVendorListMaxHeight(nextVendorListMaxHeight);
+    setDesktopSubmenuListMaxHeight(nextSubmenuListMaxHeight);
+  }, [activeDesktopVendorGroup, hasDesktopModelSubmenu, isMobile, open]);
+
+  React.useLayoutEffect(() => {
+    updateDesktopSubmenuMetrics();
+
+    if (!open || isMobile || !hasDesktopModelSubmenu) {
+      return;
+    }
+
+    window.addEventListener("resize", updateDesktopSubmenuMetrics);
+    window.addEventListener("scroll", updateDesktopSubmenuMetrics, true);
+    if (typeof ResizeObserver === "undefined") {
+      return () => {
+        window.removeEventListener("resize", updateDesktopSubmenuMetrics);
+        window.removeEventListener("scroll", updateDesktopSubmenuMetrics, true);
+      };
+    }
+
+    const observer = new ResizeObserver(updateDesktopSubmenuMetrics);
+    if (desktopMenuRootRef.current) {
+      observer.observe(desktopMenuRootRef.current);
+    }
+    if (desktopVendorMenuRef.current) {
+      observer.observe(desktopVendorMenuRef.current);
+    }
+    if (desktopSubmenuRef.current) {
+      observer.observe(desktopSubmenuRef.current);
+    }
+    const activeVendorButton = activeDesktopVendorGroup
+      ? desktopVendorItemRefs.current.get(activeDesktopVendorGroup.vendor)
+      : null;
+    if (activeVendorButton) {
+      observer.observe(activeVendorButton);
+    }
+
+    return () => {
+      window.removeEventListener("resize", updateDesktopSubmenuMetrics);
+      window.removeEventListener("scroll", updateDesktopSubmenuMetrics, true);
+      observer.disconnect();
+    };
+  }, [activeDesktopVendorGroup, hasDesktopModelSubmenu, isMobile, open, updateDesktopSubmenuMetrics]);
 
   const handleOpenChange = React.useCallback(
     (nextOpen: boolean) => {
@@ -563,7 +699,7 @@ export function ChatModelPicker({
               "relative overflow-visible rounded-xl",
               isMobile
                 ? "w-[min(20rem,calc(100vw-3rem))] p-1.5"
-                : "w-56 border-0 bg-transparent p-0 shadow-none",
+                : "w-[min(14rem,calc(100vw-3rem))] border-0 bg-transparent p-0 shadow-none",
             )}
           >
             {isMobile ? (
@@ -640,14 +776,22 @@ export function ChatModelPicker({
                 )}
               </>
             ) : (
-              <div className="relative min-w-0">
-                <div
-                  className="absolute right-[calc(100%+0.5rem)] top-0 w-[min(20rem,calc(100vw-16rem))] rounded-xl border-[0.5px] border-border bg-popover p-1.5 shadow-xs"
-                >
-                  {activeDesktopVendorGroup ? (
-                    <ModelMenuScrollContainer>
+              <div ref={desktopMenuRootRef} className="relative min-w-0">
+                {hasDesktopModelSubmenu ? (
+                  <div
+                    ref={desktopSubmenuRef}
+                    style={{
+                      top: desktopSubmenuTop,
+                      width: desktopSubmenuWidth,
+                    } as React.CSSProperties}
+                    className={cn(
+                      "absolute rounded-xl border-[0.5px] border-border bg-popover p-1.5 shadow-xs",
+                      desktopSubmenuSide === "right" ? "left-[calc(100%+0.5rem)]" : "right-[calc(100%+0.5rem)]",
+                    )}
+                  >
+                    <ModelMenuScrollContainer maxHeight={desktopSubmenuListMaxHeight}>
                       <div className="flex flex-col gap-0.5">
-                        {activeDesktopVendorGroup.items.map((item) => (
+                        {activeDesktopVendorGroup?.items.map((item) => (
                           <ChatModelMenuItem
                             key={item.platformModelName}
                             model={item}
@@ -664,14 +808,10 @@ export function ChatModelPicker({
                         ))}
                       </div>
                     </ModelMenuScrollContainer>
-                  ) : (
-                    <div className="px-2 py-3 text-[11px] leading-4 text-muted-foreground">
-                      {t("empty")}
-                    </div>
-                  )}
-                </div>
+                  </div>
+                ) : null}
 
-                <div className="min-w-0 rounded-xl border-[0.5px] border-border bg-popover p-1.5 shadow-xs">
+                <div ref={desktopVendorMenuRef} className="min-w-0 rounded-xl border-[0.5px] border-border bg-popover p-1.5 shadow-xs">
                   <div className="flex h-7 items-center justify-between gap-3 px-2">
                     <span className="text-[11px] font-medium text-foreground">{t("vendor")}</span>
                     <span className="truncate text-[10px] font-medium text-muted-foreground">
@@ -683,7 +823,7 @@ export function ChatModelPicker({
                       {t("empty")}
                     </div>
                   ) : (
-                    <ModelMenuScrollContainer>
+                    <ModelMenuScrollContainer maxHeight={desktopVendorListMaxHeight} onScroll={updateDesktopSubmenuMetrics}>
                       <div className="flex flex-col gap-0.5">
                         {vendorGroups.map((group) => {
                           const selectedVendor = group.vendor === selectedVendorKey;
@@ -693,6 +833,13 @@ export function ChatModelPicker({
                             <button
                               type="button"
                               key={group.vendor}
+                              ref={(node) => {
+                                if (node) {
+                                  desktopVendorItemRefs.current.set(group.vendor, node);
+                                  return;
+                                }
+                                desktopVendorItemRefs.current.delete(group.vendor);
+                              }}
                               className={cn(
                                 "flex h-7 w-full items-center gap-2 rounded-md px-2 py-0 text-left text-[11px] font-medium outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground",
                                 activeVendor ? "bg-accent text-accent-foreground" : "text-muted-foreground",

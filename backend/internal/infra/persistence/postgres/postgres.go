@@ -31,6 +31,10 @@ func New(cfg config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	if err = schema.SeedPermissionGroups(db); err != nil {
+		return nil, err
+	}
+
 	if err = schema.SeedBillingCatalog(db); err != nil {
 		return nil, err
 	}
@@ -386,6 +390,9 @@ func applyConversationBaselineIndexes(db *gorm.DB) error {
 		WHERE status = 'active'`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_conversation_shares_user_status_updated_at
 		ON "chat_conversation_shares" ("user_id", "status", "updated_at" DESC, "id" DESC)`,
+		`ALTER TABLE "chat_messages"
+		ADD COLUMN IF NOT EXISTS "reasoning_content" text NOT NULL DEFAULT ''`,
+		`COMMENT ON COLUMN "chat_messages"."reasoning_content" IS '上游推理内容回灌上下文'`,
 		`ALTER TABLE "chat_messages"
 		ADD COLUMN IF NOT EXISTS "edited_at" timestamptz`,
 		`COMMENT ON COLUMN "chat_messages"."edited_at" IS '用户编辑时间'`,

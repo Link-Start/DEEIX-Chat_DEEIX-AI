@@ -181,6 +181,19 @@ func (s *Service) ListAllConversationsAfterID(ctx context.Context, afterID uint,
 	return s.repo.ListAllConversationsAfterID(ctx, afterID, limit)
 }
 
+// ListUserConversationsAfterID 按主键游标分页列出指定用户的会话。
+func (s *Service) ListUserConversationsAfterID(ctx context.Context, userID uint, afterID uint, limit int) ([]model.Conversation, error) {
+	return s.repo.ListUserConversationsAfterID(ctx, userID, afterID, limit)
+}
+
+// ExportUserConversationData 导出单会话完整数据，校验用户归属。
+func (s *Service) ExportUserConversationData(ctx context.Context, userID uint, conversation *model.Conversation) (*ConversationExportResult, error) {
+	if conversation.UserID != userID {
+		return nil, ErrConversationNotFound
+	}
+	return s.ExportConversationData(ctx, conversation)
+}
+
 // ExportConversationData 导出单会话完整数据，不做用户归属校验（管理员用）。
 func (s *Service) ExportConversationData(ctx context.Context, conversation *model.Conversation) (*ConversationExportResult, error) {
 	items, err := s.repo.ListAllMessages(ctx, conversation.ID)
@@ -448,16 +461,13 @@ func (s *Service) ListConversationRuns(
 	return s.repo.ListConversationRuns(ctx, userID, conversationID, offset, limit)
 }
 
-// GetLatestConversationRunModel 查询当前用户最近一次真实使用的模型。
-func (s *Service) GetLatestConversationRunModel(ctx context.Context, userID uint) (*model.Run, error) {
-	run, err := s.repo.GetLatestConversationRunModel(ctx, userID)
-	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
+// GetConversationSystemDefaultModel 返回后台配置的新会话系统推荐模型。
+func (s *Service) GetConversationSystemDefaultModel() string {
+	if s == nil || s.cfg == nil {
+		return ""
 	}
-	return run, nil
+	cfg := s.cfg.Snapshot()
+	return strings.TrimSpace(cfg.ConversationDefaultModel)
 }
 
 // EventLogListFilter 描述管理员对话事件筛选和排序条件。

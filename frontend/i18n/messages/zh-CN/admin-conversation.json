@@ -5,6 +5,9 @@
     "optionPassthrough": "参数透传",
     "dataExport": "数据导出"
   },
+  "defaultModel": {
+    "systemRecommended": "系统推荐"
+  },
   "taskModel": {
     "follow": "跟随当前模型"
   },
@@ -14,6 +17,10 @@
     "disabled": "禁止透传"
   },
   "fields": {
+    "defaultModel": {
+      "label": "新会话默认模型",
+      "description": "用户选择系统推荐或未设置个人默认模型时优先使用；留空时回退到第一个可用模型。"
+    },
     "taskModel": {
       "label": "任务执行模型",
       "description": "生成会话标题和标签时使用的聊天模型。"
@@ -148,6 +155,8 @@
     "title": "全部对话",
     "description": "导出所有对话、消息和元数据为 JSONL 文件。",
     "exportButton": "导出",
+    "success": "已导出 {count} 个对话",
+    "partial": "已导出 {exported} 个对话，{failed} 个失败",
     "failed": "导出失败，请重试。"
   }
 }

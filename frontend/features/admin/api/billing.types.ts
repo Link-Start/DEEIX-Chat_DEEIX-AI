@@ -21,6 +21,7 @@ export type AdminBillingPlanDTO = {
   discountPercent: number;
   sortOrder: number;
   isActive: boolean;
+  permissionGroupID: number | null;
   prices: AdminBillingPlanPriceDTO[];
 };
 
@@ -67,6 +68,25 @@ export type AdminModelPricingData = {
   modelPricing: AdminModelPricingDTO;
 };
 
+export type AdminOfficialPricingCatalogItemDTO = {
+  id: string;
+  canonicalSlug: string;
+  name: string;
+  pricing: {
+    prompt: string;
+    completion: string;
+    inputCacheRead: string;
+    inputCacheWrite: string;
+  };
+};
+
+export type AdminOfficialPricingCatalogData = {
+  fetchedAt: string;
+  cached: boolean;
+  stale: boolean;
+  items: AdminOfficialPricingCatalogItemDTO[];
+};
+
 export type UpdateAdminBillingPlanRequest = {
   name: string;
   description: string;
@@ -75,6 +95,7 @@ export type UpdateAdminBillingPlanRequest = {
   currency?: string;
   amountUSD: number;
   billingInterval: "month" | "year" | "lifetime" | string;
+  permissionGroupID?: number | null;
 };
 
 export type AdminBillingPlanData = {

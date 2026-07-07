@@ -17,6 +17,7 @@ type messageBranchState struct {
 	ParentPublicID   string
 	SourceMessageID  *uint
 	SourcePublicID   string
+	ReuseUserMessage *model.Message
 }
 
 func (s *Service) resolveMessageBranch(
@@ -49,9 +50,6 @@ func (s *Service) resolveMessageBranch(
 	}
 
 	if sourceMessage != nil {
-		if sourceMessage.Role != "user" {
-			return nil, ErrInvalidMessageBranch
-		}
 		if branchReason != "retry" && branchReason != "edit" {
 			return nil, ErrInvalidMessageBranch
 		}
@@ -67,6 +65,16 @@ func (s *Service) resolveMessageBranch(
 			}
 			parentMessage = cachedParent
 		case expectedParentID != nil && parentMessage != nil && parentMessage.ID != *expectedParentID:
+			return nil, ErrInvalidMessageBranch
+		}
+		switch sourceMessage.Role {
+		case "user":
+			// User retry/edit creates a new user sibling and a fresh assistant child.
+		case "assistant":
+			if branchReason != "retry" || parentMessage == nil || parentMessage.Role != "user" {
+				return nil, ErrInvalidMessageBranch
+			}
+		default:
 			return nil, ErrInvalidMessageBranch
 		}
 	} else if branchReason != "default" {
@@ -120,6 +128,10 @@ func (s *Service) resolveMessageBranch(
 	if sourceMessage != nil {
 		state.SourceMessageID = &sourceMessage.ID
 		state.SourcePublicID = sourceMessage.PublicID
+		if sourceMessage.Role == "assistant" {
+			userMessage := *parentMessage
+			state.ReuseUserMessage = &userMessage
+		}
 	}
 	return state, nil
 }
@@ -191,6 +203,9 @@ func buildBranchMessagePath(branch *messageBranchState, userMessage *model.Messa
 	if branch == nil || userMessage == nil {
 		return nil
 	}
+	if branch.ReuseUserMessage != nil {
+		return buildMessagePath(branch.ExistingMessages, branch.ReuseUserMessage.ID)
+	}
 	allMessages := make([]model.Message, 0, len(branch.ExistingMessages)+1)
 	allMessages = append(allMessages, branch.ExistingMessages...)
 	allMessages = append(allMessages, *userMessage)
@@ -237,25 +252,25 @@ func (s *Service) expandContextMessagesToSnapshotBoundary(
 }
 
 // applyContextTokenBudget 按模型 Token 预算截断，保留最近消息。
-func (s *Service) applyContextTokenBudget(messages []model.Message, capabilityModelName string, capabilitiesJSON string) []model.Message {
+func (s *Service) applyContextTokenBudget(messages []model.Message, capabilityModelName string, capabilitiesJSON string, includeReasoningContent bool) []model.Message {
 	cfg := s.cfg.Snapshot()
 	if !cfg.ContextTokenBudgetEnabled || len(messages) <= 1 {
 		return messages
 	}
 	budget := llm.EffectiveContextBudgetFromCapabilities(capabilityModelName, capabilitiesJSON)
-	return truncateContextByTokenBudget(messages, budget)
+	return truncateContextByTokenBudget(messages, budget, includeReasoningContent)
 }
 
 // truncateContextByTokenBudget 从最近消息开始，保留在 budgetTokens 以内的消息。
 // 始终保留最后一条消息（当前用户输入）。
-func truncateContextByTokenBudget(messages []model.Message, budgetTokens int) []model.Message {
+func truncateContextByTokenBudget(messages []model.Message, budgetTokens int, includeReasoningContent bool) []model.Message {
 	if budgetTokens <= 0 || len(messages) == 0 {
 		return messages
 	}
 	total := 0
 	cutFrom := len(messages)
 	for i := len(messages) - 1; i >= 0; i-- {
-		msgTokens := int(estimateTokens(messages[i].Content))
+		msgTokens := int(estimateDomainMessageTokens(messages[i], includeReasoningContent))
 		if total+msgTokens > budgetTokens && cutFrom < len(messages) {
 			break
 		}
@@ -263,6 +278,14 @@ func truncateContextByTokenBudget(messages []model.Message, budgetTokens int) []
 		cutFrom = i
 	}
 	return messages[cutFrom:]
+}
+
+func estimateDomainMessageTokens(message model.Message, includeReasoningContent bool) int64 {
+	tokens := estimateTokens(message.Content)
+	if includeReasoningContent && message.Role == "assistant" {
+		tokens += estimateTokens(message.ReasoningContent)
+	}
+	return tokens
 }
 
 func buildRAGQuery(contextMessages []model.Message, currentContent string, historyTurns int) string {

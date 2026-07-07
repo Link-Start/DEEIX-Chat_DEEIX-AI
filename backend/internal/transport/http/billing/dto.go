@@ -106,13 +106,14 @@ type RedeemCodeRequest struct {
 
 // UpdateBillingPlanRequest 保存周期套餐。
 type UpdateBillingPlanRequest struct {
-	Name            string  `json:"name" binding:"required,min=1,max=64"`
-	Description     string  `json:"description" binding:"max=255"`
-	PeriodCreditUSD float64 `json:"periodCreditUSD" binding:"min=0"`
-	DiscountPercent int     `json:"discountPercent" binding:"min=0,max=100"`
-	Currency        string  `json:"currency" binding:"omitempty,max=16"`
-	AmountUSD       float64 `json:"amountUSD" binding:"min=0"`
-	BillingInterval string  `json:"billingInterval" binding:"required,oneof=month year lifetime"`
+	Name              string  `json:"name" binding:"required,min=1,max=64"`
+	Description       string  `json:"description" binding:"max=255"`
+	PeriodCreditUSD   float64 `json:"periodCreditUSD" binding:"min=0"`
+	DiscountPercent   int     `json:"discountPercent" binding:"min=0,max=100"`
+	Currency          string  `json:"currency" binding:"omitempty,max=16"`
+	AmountUSD         float64 `json:"amountUSD" binding:"min=0"`
+	BillingInterval   string  `json:"billingInterval" binding:"required,oneof=month year lifetime"`
+	PermissionGroupID *uint   `json:"permissionGroupID"`
 }
 
 type nullableIntRequest struct {
@@ -182,6 +183,7 @@ type BillingPlanResponse struct {
 	DiscountPercent     int                    `json:"discountPercent"`
 	SortOrder           int                    `json:"sortOrder"`
 	IsActive            bool                   `json:"isActive"`
+	PermissionGroupID   *uint                  `json:"permissionGroupID"`
 	Prices              []BillingPriceResponse `json:"prices"`
 }
 
@@ -478,6 +480,30 @@ type ModelPricingDataResponse struct {
 	ModelPricing ModelPricingResponse `json:"modelPricing"`
 }
 
+// OpenRouterOfficialPricingItemResponse OpenRouter 官方模型定价项。
+type OpenRouterOfficialPricingItemResponse struct {
+	ID            string                                       `json:"id"`
+	CanonicalSlug string                                       `json:"canonicalSlug"`
+	Name          string                                       `json:"name"`
+	Pricing       OpenRouterOfficialPricingUnitPricingResponse `json:"pricing"`
+}
+
+// OpenRouterOfficialPricingUnitPricingResponse OpenRouter 官方模型价格字段。
+type OpenRouterOfficialPricingUnitPricingResponse struct {
+	Prompt          string `json:"prompt"`
+	Completion      string `json:"completion"`
+	InputCacheRead  string `json:"inputCacheRead"`
+	InputCacheWrite string `json:"inputCacheWrite"`
+}
+
+// OpenRouterOfficialPricingDataResponse OpenRouter 官方模型定价缓存响应。
+type OpenRouterOfficialPricingDataResponse struct {
+	FetchedAt time.Time                               `json:"fetchedAt"`
+	Cached    bool                                    `json:"cached"`
+	Stale     bool                                    `json:"stale"`
+	Items     []OpenRouterOfficialPricingItemResponse `json:"items"`
+}
+
 // BillingConfigResponse 计费全局配置响应。
 type BillingConfigResponse struct {
 	Mode                     string                      `json:"mode"`
@@ -591,6 +617,12 @@ type ModelPricingListResponseDoc struct {
 	} `json:"data"`
 }
 
+// OpenRouterOfficialPricingResponseDoc OpenRouter 官方模型定价响应文档。
+type OpenRouterOfficialPricingResponseDoc struct {
+	ErrorMsg string                                `json:"errorMsg"`
+	Data     OpenRouterOfficialPricingDataResponse `json:"data"`
+}
+
 // BillingConfigResponseDoc 计费全局配置响应文档。
 type BillingConfigResponseDoc struct {
 	ErrorMsg string                    `json:"errorMsg"`
@@ -676,6 +708,7 @@ func toPlanListResponse(views []appbilling.BillingPlanView) []BillingPlanRespons
 			DiscountPercent:     v.DiscountPercent,
 			SortOrder:           v.SortOrder,
 			IsActive:            v.IsActive,
+			PermissionGroupID:   v.PermissionGroupID,
 			Prices:              prices,
 		})
 	}
@@ -1119,6 +1152,7 @@ func planUpdateInputFromRequest(req UpdateBillingPlanRequest) appbilling.PlanUpd
 		Currency:            req.Currency,
 		AmountCents:         usdToCents(req.AmountUSD),
 		BillingInterval:     req.BillingInterval,
+		PermissionGroupID:   req.PermissionGroupID,
 	}
 }
 

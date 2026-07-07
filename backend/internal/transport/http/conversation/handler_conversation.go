@@ -1,9 +1,12 @@
 package conversation
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	appconversation "github.com/DEEIX-AI/DEEIX-Chat/backend/internal/application/conversation"
 	"github.com/DEEIX-AI/DEEIX-Chat/backend/internal/shared/response"
@@ -93,7 +96,7 @@ func (h *Handler) ListConversations(c *gin.Context) {
 
 // GetConversationDefaultModelCandidate godoc
 // @Summary 查询新会话默认模型候选
-// @Description 返回当前用户最近一次真实运行使用的模型，用于系统默认的新会话模型选择
+// @Description 返回后台配置的新会话系统推荐模型；未配置时返回空候选
 // @Tags chat
 // @Accept json
 // @Produce json
@@ -102,27 +105,15 @@ func (h *Handler) ListConversations(c *gin.Context) {
 // @Failure 500 {object} ErrorDoc
 // @Router /conversations/default-model-candidate [get]
 func (h *Handler) GetConversationDefaultModelCandidate(c *gin.Context) {
-	userID := middleware.MustUserID(c)
-
-	run, err := h.service.GetLatestConversationRunModel(c.Request.Context(), userID)
-	if err != nil {
-		response.Error(c, http.StatusInternalServerError, "load default model candidate failed")
-		return
-	}
-	if run == nil {
-		response.Success(c, ConversationDefaultModelCandidateResponse{})
+	if systemDefaultModel := h.service.GetConversationSystemDefaultModel(); systemDefaultModel != "" {
+		response.Success(c, ConversationDefaultModelCandidateResponse{
+			PlatformModelName: systemDefaultModel,
+			Source:            "system_default",
+		})
 		return
 	}
 
-	usedAt := run.EndedAt
-	if usedAt == nil {
-		usedAt = &run.StartedAt
-	}
-	response.Success(c, ConversationDefaultModelCandidateResponse{
-		PlatformModelName: run.PlatformModelName,
-		Source:            "latest_run",
-		UsedAt:            usedAt,
-	})
+	response.Success(c, ConversationDefaultModelCandidateResponse{})
 }
 
 // GetConversation godoc
@@ -197,6 +188,84 @@ func (h *Handler) ExportConversation(c *gin.Context) {
 	)
 
 	response.Success(c, toConversationExportResponse(item))
+}
+
+type userExportManifest struct {
+	Type      string `json:"_type"`
+	Complete  bool   `json:"complete"`
+	Exported  int64  `json:"exported"`
+	Failed    int    `json:"failed"`
+	FailedIDs []uint `json:"failedIDs,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// ExportAllConversations godoc
+// @Summary 导出当前用户全部对话
+// @Description 流式导出当前用户全部会话及消息为 NDJSON 文件
+// @Tags chat
+// @Produce application/x-ndjson
+// @Security BearerAuth
+// @Success 200 {string} string "NDJSON stream"
+// @Failure 500 {object} ErrorDoc
+// @Router /conversations/export [get]
+func (h *Handler) ExportAllConversations(c *gin.Context) {
+	userID := middleware.MustUserID(c)
+
+	h.recordAudit(c, "export_all_conversations", "conversation", "", map[string]interface{}{"scope": "user"})
+
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="my-conversations-%s.jsonl"`, time.Now().UTC().Format("20060102-150405")))
+	c.Header("Cache-Control", "no-store")
+	c.Status(http.StatusOK)
+
+	const batchSize = 50
+	var lastID uint
+	encoder := json.NewEncoder(c.Writer)
+	exported := int64(0)
+	var failedIDs []uint
+	writeManifest := func(complete bool, exportErr string) {
+		_ = encoder.Encode(userExportManifest{
+			Type:      "export_manifest",
+			Complete:  complete,
+			Exported:  exported,
+			Failed:    len(failedIDs),
+			FailedIDs: failedIDs,
+			Error:     exportErr,
+		})
+		c.Writer.Flush()
+	}
+
+	for {
+		if c.Request.Context().Err() != nil {
+			return
+		}
+		conversations, err := h.service.ListUserConversationsAfterID(c.Request.Context(), userID, lastID, batchSize)
+		if err != nil {
+			writeManifest(false, "failed to list conversations")
+			return
+		}
+		if len(conversations) == 0 {
+			break
+		}
+		for i := range conversations {
+			result, err := h.service.ExportUserConversationData(c.Request.Context(), userID, &conversations[i])
+			if err != nil {
+				failedIDs = append(failedIDs, conversations[i].ID)
+				continue
+			}
+			if err := encoder.Encode(ToConversationExportResponse(result)); err != nil {
+				return
+			}
+			exported++
+		}
+		c.Writer.Flush()
+		lastID = conversations[len(conversations)-1].ID
+		if len(conversations) < batchSize {
+			break
+		}
+	}
+
+	writeManifest(true, "")
 }
 
 // RenameConversation godoc

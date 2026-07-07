@@ -18,6 +18,7 @@ import {
   toPendingAttachments,
   toPendingProcessTrace,
 } from "@/features/chat/model/message-submit";
+import { readLiveUpstreamThinkTrace } from "@/features/chat/model/upstream-think-store";
 import {
   resolveErrorDetails,
   resolveErrorMessage,
@@ -27,6 +28,7 @@ import {
 import {
   applyBranchSelectionPath,
   buildChildrenIndex,
+  parseAttachments,
   resolveBranchSelectionPath,
   toBranchKey,
 } from "@/features/chat/model/chat-thread";
@@ -40,6 +42,7 @@ import {
   streamImageEdit,
   streamImageGeneration,
   streamMessage as streamConversationMessage,
+  streamVideoGeneration,
   updateMessage,
   type ConversationStreamOptions,
 } from "@/shared/api/conversation";
@@ -47,6 +50,7 @@ import type {
   ConversationDTO,
   ConversationOptions,
   MediaImageRequest,
+  MediaVideoRequest,
   MessageDTO,
   SendMessageRequest,
   SendMessageResult,
@@ -106,14 +110,24 @@ function resolveInputSideUsageValue(...values: Array<number | null | undefined>)
 function resolveMediaStatusLabel(
   status: string,
   fallbackMessage: string,
+  contentType: string | undefined,
   t: ReturnType<typeof useTranslations>,
 ): string {
   switch (status.trim()) {
     case "queued":
+      if (contentType === "video") {
+        return t("mediaStatus.videoQueued");
+      }
       return t("mediaStatus.queued");
     case "running":
+      if (contentType === "video") {
+        return t("mediaStatus.videoRunning");
+      }
       return t("mediaStatus.running");
     case "saving_artifact":
+      if (contentType === "video") {
+        return t("mediaStatus.videoSavingArtifact");
+      }
       return t("mediaStatus.savingArtifact");
     default:
       return fallbackMessage.trim() || status.trim();
@@ -286,8 +300,10 @@ export function useChatMessageSubmit({
   visibleMessages,
   combinedMessages,
   serverMessagePublicIDs,
+  enqueueUpstreamThinkDelta,
   enqueueStreamText,
   flushStreamTextNow,
+  flushUpstreamThinkNow,
   resetStreamBuffer,
   startStream,
   activeGenerationRunsRef,
@@ -327,10 +343,12 @@ export function useChatMessageSubmit({
   visibleMessages: ChatAreaMessage[];
   combinedMessages: ChatAreaMessage[];
   serverMessagePublicIDs: Set<string>;
+  enqueueUpstreamThinkDelta: (event: Extract<StreamMessageEvent, { type: "upstream_think_delta" }>) => void;
   enqueueStreamText: (delta: string) => void;
   flushStreamTextNow: () => void;
+  flushUpstreamThinkNow: () => void;
   resetStreamBuffer: () => void;
-  startStream: (exchangeKey: string) => void;
+  startStream: (exchangeKey: string, runID?: string) => void;
   activeGenerationRunsRef?: React.RefObject<Set<string>>;
   failedGenerationRunsRef?: React.RefObject<Set<string>>;
   resumeGenerationActive?: boolean;
@@ -475,7 +493,8 @@ export function useChatMessageSubmit({
           description: t("attachmentsTruncatedDescription", { count: maxFilesPerMessage }),
         });
       }
-      const submitDecision = resolveChatSubmitDecision(selectedModel, effectiveAttachments);
+      const sanitizedOptions = sanitizeConversationOptions(requestOptions);
+      const submitDecision = resolveChatSubmitDecision(selectedModel, effectiveAttachments, sanitizedOptions);
       if (submitDecision.blockedReason) {
         toast.error(t("mediaInputUnsupported"), {
           description: resolveSubmitBlockDescription(submitDecision.blockedReason, t),
@@ -493,16 +512,24 @@ export function useChatMessageSubmit({
       const resolvedParentPublicID = resolvePersistedPublicID(parentMessagePublicID);
       const resolvedSourcePublicID = resolvePersistedPublicID(sourceMessagePublicID);
       const resolvedBranchReason = branchReason ?? "default";
+      const assistantOnlyBranch =
+        resolvedBranchReason === "retry" &&
+        Boolean(resolvedParentPublicID && resolvedSourcePublicID) &&
+        combinedMessages.some((item) => item.publicID === resolvedSourcePublicID && item.role === "assistant");
       const tempUserPublicID = `${exchangeKey}-user`;
       const tempAssistantPublicID = `${exchangeKey}-assistant`;
+      const pendingUserPublicID = assistantOnlyBranch && resolvedParentPublicID ? resolvedParentPublicID : tempUserPublicID;
       const createdAt = new Date().toISOString();
       let sentSuccessfully = false;
       let shouldKeepConversationLayout = false;
       const streamAbortController = new AbortController();
       const clientRunID = createClientRunID();
-      const sanitizedOptions = sanitizeConversationOptions(requestOptions);
       const assistantImageAspectRatio =
-        submitTask === "chat" ? undefined : resolveImageLoadingAspectRatio(sanitizedOptions);
+        submitTask === "image_generation" || submitTask === "image_edit"
+          ? resolveImageLoadingAspectRatio(sanitizedOptions)
+          : undefined;
+      const assistantContentType =
+        submitTask === "chat" ? "markdown" : submitTask === "video_generation" ? "video" : "image";
       let targetConversationID = conversationIDRef.current;
       let targetConversation = activeConversationRef.current;
       let metadataRefreshInFlight = false;
@@ -519,10 +546,11 @@ export function useChatMessageSubmit({
         setDraft("");
         setAttachments([]);
       }
-      startStream(exchangeKey);
+      startStream(exchangeKey, clientRunID);
       setPendingExchange({
         key: exchangeKey,
         conversationPublicID: targetConversationID?.trim() || null,
+        userPublicID: assistantOnlyBranch ? pendingUserPublicID : undefined,
         tempUserPublicID,
         tempAssistantPublicID,
         runID: clientRunID,
@@ -536,7 +564,7 @@ export function useChatMessageSubmit({
         assistantText: "",
         assistantPending: true,
         assistantStreaming: true,
-        assistantContentType: submitTask === "chat" ? "markdown" : "image",
+        assistantContentType,
         assistantImageAspectRatio,
         assistantInlineAlert: undefined,
         assistantCreatedAt: createdAt,
@@ -544,8 +572,8 @@ export function useChatMessageSubmit({
       });
       setBranchSelections((prev) => ({
         ...prev,
-        [toBranchKey(resolvedParentPublicID)]: tempUserPublicID,
-        [tempUserPublicID]: tempAssistantPublicID,
+        ...(assistantOnlyBranch ? {} : { [toBranchKey(resolvedParentPublicID)]: pendingUserPublicID }),
+        [pendingUserPublicID]: tempAssistantPublicID,
       }));
 
       try {
@@ -659,7 +687,7 @@ export function useChatMessageSubmit({
             );
           },
           onMediaStatus: (event) => {
-            const activityLabel = resolveMediaStatusLabel(event.status, event.message, t);
+            const activityLabel = resolveMediaStatusLabel(event.status, event.message, event.content_type, t);
             setPendingExchange((prev) =>
               prev && prev.key === exchangeKey
                 ? { ...prev, assistantFileProc: true, assistantActivityLabel: activityLabel }
@@ -704,14 +732,7 @@ export function useChatMessageSubmit({
             );
           },
           onUpstreamThinkDelta: (event) => {
-            setPendingExchange((prev) =>
-              prev && prev.key === exchangeKey
-                ? {
-                    ...prev,
-                    assistantProcessTrace: event.trace ? toPendingProcessTrace(event.trace) : prev.assistantProcessTrace,
-                  }
-                : prev,
-            );
+            enqueueUpstreamThinkDelta(event);
           },
           onDelta: (delta) => {
             // Always clear assistantFileProc so batched React updates cannot keep the file_proc spinner alive.
@@ -752,6 +773,12 @@ export function useChatMessageSubmit({
             htmlVisualColorMode: requestHTMLVisualPromptEnabled ? requestHTMLVisualColorMode : undefined,
           };
           completed = await streamConversationMessage(token, targetConversationID, chatPayload, streamOptions);
+        } else if (submitTask === "video_generation") {
+          const mediaPayload: MediaVideoRequest = {
+            ...commonStreamPayload,
+            prompt: payloadContent,
+          };
+          completed = await streamVideoGeneration(token, targetConversationID, mediaPayload, streamOptions);
         } else {
           const mediaPayload: MediaImageRequest = {
             ...commonStreamPayload,
@@ -767,6 +794,7 @@ export function useChatMessageSubmit({
         sentSuccessfully = true;
         lastCompletedAssistantPublicIDRef.current = completed.assistantMessage.publicID;
         flushStreamTextNow();
+        flushUpstreamThinkNow();
         resetStreamBuffer();
         const assistantMessageStatus = completed.assistantMessage.status || "success";
         const assistantMessageSucceeded = assistantMessageStatus === "success";
@@ -805,6 +833,7 @@ export function useChatMessageSubmit({
             assistantCreatedAt: completed.assistantMessage.createdAt,
             assistantUpdatedAt: completed.assistantMessage.updatedAt,
             assistantContentType: completed.assistantMessage.contentType || prev.assistantContentType,
+            assistantAttachments: parseAttachments(completed.assistantMessage.attachments),
             assistantInputTokens: resolveInputSideUsageValue(
               completed.assistantMessage.inputTokens,
               completed.userMessage.inputTokens,
@@ -845,10 +874,14 @@ export function useChatMessageSubmit({
           applyBranchSelectionPath(
             prev,
             [
-              {
-                parentPublicID: completed.userMessage.parentPublicID || resolvedParentPublicID,
-                publicID: completed.userMessage.publicID,
-              },
+              ...(assistantOnlyBranch
+                ? []
+                : [
+                    {
+                      parentPublicID: completed.userMessage.parentPublicID || resolvedParentPublicID,
+                      publicID: completed.userMessage.publicID,
+                    },
+                  ]),
               {
                 parentPublicID: completed.userMessage.publicID,
                 publicID: completed.assistantMessage.publicID,
@@ -875,6 +908,7 @@ export function useChatMessageSubmit({
         reload();
       } catch (error) {
         flushStreamTextNow();
+        flushUpstreamThinkNow();
         resetStreamBuffer();
         if (streamAbortController.signal.aborted) {
           shouldKeepConversationLayout = true;
@@ -887,6 +921,7 @@ export function useChatMessageSubmit({
                   assistantStreaming: false,
                   assistantFileProc: false,
                   assistantActivityLabel: undefined,
+                  assistantProcessTrace: readLiveUpstreamThinkTrace(clientRunID) ?? prev.assistantProcessTrace,
                   assistantInlineAlert: undefined,
                 }
               : prev,
@@ -910,6 +945,7 @@ export function useChatMessageSubmit({
                 assistantStreaming: false,
                 assistantFileProc: false,
                 assistantActivityLabel: undefined,
+                assistantProcessTrace: readLiveUpstreamThinkTrace(clientRunID) ?? prev.assistantProcessTrace,
                 assistantStatus: "error",
                 assistantErrorMessage: errorMessage,
                 assistantInlineAlert: {
@@ -940,8 +976,10 @@ export function useChatMessageSubmit({
     [
       activeGenerationRunsRef,
       failedGenerationRunsRef,
+      enqueueUpstreamThinkDelta,
       enqueueStreamText,
       flushStreamTextNow,
+      flushUpstreamThinkNow,
       options,
       onConversationCreated,
       prependNewConversation,
@@ -967,6 +1005,7 @@ export function useChatMessageSubmit({
       maxFilesPerMessage,
       t,
       visibleMessageCount,
+      combinedMessages,
     ],
   );
 
@@ -1120,8 +1159,9 @@ export function useChatMessageSubmit({
         toast.error(t("retryReplyFailed"), { description: t("retryReplyMissingUser") });
         return;
       }
-      const sourceMessagePublicID = resolvePersistedPublicID(parentUser.publicID);
-      if (!sourceMessagePublicID) {
+      const parentUserPublicID = resolvePersistedPublicID(parentUser.publicID);
+      const assistantSourceMessagePublicID = resolvePersistedPublicID(message.publicID);
+      if (!parentUserPublicID || !assistantSourceMessagePublicID) {
         toast.error(t("retryReplyFailed"), { description: t("continueReplyUnavailable") });
         return;
       }
@@ -1129,8 +1169,8 @@ export function useChatMessageSubmit({
         content: parentUser.content.trim(),
         currentAttachments: toPendingAttachments(parentUser),
         resetComposer: false,
-        parentMessagePublicID: parentUser.parentPublicID,
-        sourceMessagePublicID,
+        parentMessagePublicID: parentUserPublicID,
+        sourceMessagePublicID: assistantSourceMessagePublicID,
         branchReason: "retry",
       });
     },

@@ -74,9 +74,9 @@ func estimateMessageTokens(message llm.Message) int64 {
 		for _, part := range message.Parts {
 			tokens += estimateContentPartTokens(part)
 		}
-		return tokens
+		return tokens + estimateTokens(message.ReasoningContent)
 	}
-	return tokens + estimateTokens(message.Content)
+	return tokens + estimateTokens(message.Content) + estimateTokens(message.ReasoningContent)
 }
 
 func estimatePromptTokens(messages []llm.Message) int64 {
@@ -192,6 +192,12 @@ func classifyRunErrorCode(err error) string {
 		return "media_image_edit_too_many_inputs"
 	case errors.Is(err, ErrMediaImageEditInputInvalid):
 		return "media_image_edit_input_invalid"
+	case errors.Is(err, ErrMediaVideoPromptRequired):
+		return "media_video_prompt_required"
+	case errors.Is(err, ErrMediaVideoInputInvalid):
+		return "media_video_input_invalid"
+	case errors.Is(err, ErrMediaVideoTooManyInputs):
+		return "media_video_too_many_inputs"
 	case errors.Is(err, ErrMediaRouteProtocolMismatch):
 		return "media_route_protocol_mismatch"
 	case errors.Is(err, ErrUpstreamRequestFailed):
@@ -684,8 +690,7 @@ func buildStableFileContextXML(attachments []AttachmentInput) userContextXML {
 	}
 	items := make([]AttachmentInput, 0, len(attachments))
 	for _, att := range attachments {
-		kind := normalizeAttachmentKind(att.Kind, att.MimeType)
-		if kind == "image" || strings.TrimSpace(att.ExtractedText) == "" {
+		if !isStableTextAttachment(att) {
 			continue
 		}
 		items = append(items, att)
@@ -722,7 +727,7 @@ func imageAttachmentsForCurrentUser(attachments []AttachmentInput) []AttachmentI
 	}
 	result := make([]AttachmentInput, 0)
 	for _, att := range attachments {
-		if normalizeAttachmentKind(att.Kind, att.MimeType) == "image" {
+		if att.Current && normalizeAttachmentKind(att.Kind, att.MimeType) == "image" {
 			result = append(result, att)
 		}
 	}

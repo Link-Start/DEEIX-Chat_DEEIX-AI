@@ -46,6 +46,7 @@ export type PlanFormState = {
   billingInterval: string;
   periodCredit: string;
   discountPercent: string;
+  permissionGroupID: string;
 };
 
 export type ModelPricingExportEntry = {
@@ -132,6 +133,33 @@ export const DIALOG_LAYOUT_TRANSITION = {
     ease: [0.16, 1, 0.3, 1] as const,
   },
 };
+
+export function formatBillingAmountInput(value: number | null | undefined): string {
+  if (!Number.isFinite(value ?? NaN) || (value ?? 0) <= 0) {
+    return "0";
+  }
+  return String(value);
+}
+
+export function downloadJSONFile(filename: string, value: unknown): void {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+export function shortListDescription(items: string[], emptyText = "", moreLabel = "and"): string {
+  if (items.length === 0) {
+    return emptyText;
+  }
+  const visible = items.slice(0, 5).join(", ");
+  return items.length > 5 ? `${visible} ${moreLabel} ${items.length}` : visible;
+}
 
 export function formatUSD(value: number): string {
   if (!Number.isFinite(value) || value <= 0) {
@@ -231,8 +259,14 @@ export function createFormState(row: BillingModelPricingRow): PricingFormState {
   };
 }
 
-export function createPlanFormState(plan: AdminBillingPlanDTO): PlanFormState {
+export function createPlanFormState(plan: AdminBillingPlanDTO, defaultPermissionGroupID?: number): PlanFormState {
   const defaultPrice = plan.prices.find((item) => item.isDefault) || plan.prices[0];
+  let permissionGroupID = "";
+  if (plan.permissionGroupID != null) {
+    permissionGroupID = String(plan.permissionGroupID);
+  } else if (defaultPermissionGroupID) {
+    permissionGroupID = String(defaultPermissionGroupID);
+  }
   return {
     name: plan.name || "",
     description: plan.description || "",
@@ -240,6 +274,7 @@ export function createPlanFormState(plan: AdminBillingPlanDTO): PlanFormState {
     billingInterval: defaultPrice?.billingInterval || "month",
     periodCredit: String(plan.periodCreditUSD ?? 0),
     discountPercent: String(plan.discountPercent ?? 0),
+    permissionGroupID,
   };
 }
 

@@ -812,6 +812,19 @@ func (r *Repo) ListAllConversationsAfterID(ctx context.Context, afterID uint, li
 	return toConversationDomains(rows), nil
 }
 
+// ListUserConversationsAfterID 按主键游标分页列出指定用户的会话。
+func (r *Repo) ListUserConversationsAfterID(ctx context.Context, userID uint, afterID uint, limit int) ([]domainconversation.Conversation, error) {
+	var rows []models.Conversation
+	query := r.db.WithContext(ctx).Where("user_id = ?", userID).Order("id ASC").Limit(limit)
+	if afterID > 0 {
+		query = query.Where("id > ?", afterID)
+	}
+	if err := query.Find(&rows).Error; err != nil {
+		return nil, translateError(err)
+	}
+	return toConversationDomains(rows), nil
+}
+
 // CreateMessage 创建消息。
 func (r *Repo) CreateMessage(ctx context.Context, item *domainconversation.Message) error {
 	attachmentSnapshot := item.Attachments
@@ -822,6 +835,33 @@ func (r *Repo) CreateMessage(ctx context.Context, item *domainconversation.Messa
 	*item = toMessageDomain(entity)
 	item.Attachments = attachmentSnapshot
 	return nil
+}
+
+// CreateAssistantBranchMessage 原子创建 assistant 分支消息并递增会话消息数。
+func (r *Repo) CreateAssistantBranchMessage(ctx context.Context, assistantMessage *domainconversation.Message) error {
+	if assistantMessage == nil || assistantMessage.ParentMessageID == nil {
+		return repository.ErrInvalidInput
+	}
+	attachmentSnapshot := assistantMessage.Attachments
+	return translateError(r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		entity := toMessageModel(assistantMessage)
+		if err := tx.Create(&entity).Error; err != nil {
+			return err
+		}
+		*assistantMessage = toMessageDomain(entity)
+		assistantMessage.Attachments = attachmentSnapshot
+
+		result := tx.Model(&models.Conversation{}).
+			Where("id = ?", assistantMessage.ConversationID).
+			Update("message_count", gorm.Expr("message_count + ?", 1))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return repository.ErrNotFound
+		}
+		return nil
+	}))
 }
 
 // CreateMessagePairWithUserAttachments 原子创建用户消息、助手占位消息、用户附件并递增会话消息数。
@@ -1092,33 +1132,31 @@ func (r *Repo) InterruptPendingAssistantMessageByRunID(
 func (r *Repo) UpdateAssistantMessageCompletion(
 	ctx context.Context,
 	messageID uint,
-	content string,
-	outputTokens int64,
-	reasoningTokens int64,
-	latencyMS int64,
-	status string,
-	errorCode string,
-	errorMessage string,
+	update repository.AssistantMessageCompletionUpdate,
 ) error {
-	tokenUsage := outputTokens + reasoningTokens
+	tokenUsage := update.InputTokens + update.CacheReadTokens + update.CacheWriteTokens + update.OutputTokens + update.ReasoningTokens
 	if tokenUsage < 0 {
 		tokenUsage = 0
 	}
-	if latencyMS < 0 {
-		latencyMS = 0
+	if update.LatencyMS < 0 {
+		update.LatencyMS = 0
 	}
 	return translateError(r.db.WithContext(ctx).
 		Model(&models.Message{}).
 		Where("id = ?", messageID).
 		Updates(map[string]interface{}{
-			"content":          content,
-			"token_usage":      tokenUsage,
-			"output_tokens":    outputTokens,
-			"reasoning_tokens": reasoningTokens,
-			"latency_ms":       latencyMS,
-			"status":           status,
-			"error_code":       errorCode,
-			"error_message":    errorMessage,
+			"content":            update.Content,
+			"reasoning_content":  update.ReasoningContent,
+			"token_usage":        tokenUsage,
+			"input_tokens":       update.InputTokens,
+			"output_tokens":      update.OutputTokens,
+			"cache_read_tokens":  update.CacheReadTokens,
+			"cache_write_tokens": update.CacheWriteTokens,
+			"reasoning_tokens":   update.ReasoningTokens,
+			"latency_ms":         update.LatencyMS,
+			"status":             update.Status,
+			"error_code":         update.ErrorCode,
+			"error_message":      update.ErrorMessage,
 		}).
 		Error)
 }
@@ -1165,7 +1203,7 @@ func (r *Repo) CompleteAssistantMessageWithAttachments(
 			return err
 		}
 
-		assistantTokenUsage := assistantCompletion.OutputTokens + assistantCompletion.ReasoningTokens
+		assistantTokenUsage := assistantCompletion.InputTokens + assistantCompletion.CacheReadTokens + assistantCompletion.CacheWriteTokens + assistantCompletion.OutputTokens + assistantCompletion.ReasoningTokens
 		if assistantTokenUsage < 0 {
 			assistantTokenUsage = 0
 		}
@@ -1174,14 +1212,72 @@ func (r *Repo) CompleteAssistantMessageWithAttachments(
 			latencyMS = 0
 		}
 		updates := map[string]interface{}{
-			"content":          assistantCompletion.Content,
-			"token_usage":      assistantTokenUsage,
-			"output_tokens":    assistantCompletion.OutputTokens,
-			"reasoning_tokens": assistantCompletion.ReasoningTokens,
-			"latency_ms":       latencyMS,
-			"status":           assistantCompletion.Status,
-			"error_code":       assistantCompletion.ErrorCode,
-			"error_message":    assistantCompletion.ErrorMessage,
+			"content":            assistantCompletion.Content,
+			"reasoning_content":  assistantCompletion.ReasoningContent,
+			"token_usage":        assistantTokenUsage,
+			"input_tokens":       assistantCompletion.InputTokens,
+			"output_tokens":      assistantCompletion.OutputTokens,
+			"cache_read_tokens":  assistantCompletion.CacheReadTokens,
+			"cache_write_tokens": assistantCompletion.CacheWriteTokens,
+			"reasoning_tokens":   assistantCompletion.ReasoningTokens,
+			"latency_ms":         latencyMS,
+			"status":             assistantCompletion.Status,
+			"error_code":         assistantCompletion.ErrorCode,
+			"error_message":      assistantCompletion.ErrorMessage,
+		}
+		if contentType := strings.TrimSpace(assistantCompletion.ContentType); contentType != "" {
+			updates["content_type"] = contentType
+		}
+		return tx.Model(&models.Message{}).
+			Where("id = ?", assistantMessageID).
+			Updates(updates).Error
+	}))
+}
+
+// CompleteAssistantMessageWithGeneratedAttachments 原子写入助手附件并同步助手完成态，不修改父用户消息。
+func (r *Repo) CompleteAssistantMessageWithGeneratedAttachments(
+	ctx context.Context,
+	assistantMessageID uint,
+	assistantCompletion repository.AssistantMessageCompletionUpdate,
+	assistantAttachments []domainconversation.Attachment,
+) error {
+	return translateError(r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if len(assistantAttachments) > 0 {
+			if err := lockActiveFileObjectsForAttachments(tx, 0, assistantAttachments); err != nil {
+				return err
+			}
+			entities := make([]models.Attachment, 0, len(assistantAttachments))
+			for i := range assistantAttachments {
+				item := assistantAttachments[i]
+				item.MessageID = assistantMessageID
+				entities = append(entities, toAttachmentModel(&item))
+			}
+			if err := tx.Create(&entities).Error; err != nil {
+				return err
+			}
+		}
+
+		assistantTokenUsage := assistantCompletion.InputTokens + assistantCompletion.CacheReadTokens + assistantCompletion.CacheWriteTokens + assistantCompletion.OutputTokens + assistantCompletion.ReasoningTokens
+		if assistantTokenUsage < 0 {
+			assistantTokenUsage = 0
+		}
+		latencyMS := assistantCompletion.LatencyMS
+		if latencyMS < 0 {
+			latencyMS = 0
+		}
+		updates := map[string]interface{}{
+			"content":            assistantCompletion.Content,
+			"reasoning_content":  assistantCompletion.ReasoningContent,
+			"token_usage":        assistantTokenUsage,
+			"input_tokens":       assistantCompletion.InputTokens,
+			"output_tokens":      assistantCompletion.OutputTokens,
+			"cache_read_tokens":  assistantCompletion.CacheReadTokens,
+			"cache_write_tokens": assistantCompletion.CacheWriteTokens,
+			"reasoning_tokens":   assistantCompletion.ReasoningTokens,
+			"latency_ms":         latencyMS,
+			"status":             assistantCompletion.Status,
+			"error_code":         assistantCompletion.ErrorCode,
+			"error_message":      assistantCompletion.ErrorMessage,
 		}
 		if contentType := strings.TrimSpace(assistantCompletion.ContentType); contentType != "" {
 			updates["content_type"] = contentType
@@ -1617,20 +1713,6 @@ func (r *Repo) ListConversationRuns(
 		return nil, 0, translateError(err)
 	}
 	return toConversationRunDomains(items), total, nil
-}
-
-// GetLatestConversationRunModel 查询用户最近一次成功运行的模型记录。
-func (r *Repo) GetLatestConversationRunModel(ctx context.Context, userID uint) (*domainconversation.Run, error) {
-	var item models.ConversationRun
-	if err := r.db.WithContext(ctx).
-		Model(&models.ConversationRun{}).
-		Where("user_id = ? AND status = ? AND platform_model_name <> ?", userID, "success", "").
-		Order("id DESC").
-		First(&item).Error; err != nil {
-		return nil, translateError(err)
-	}
-	result := toConversationRunDomain(item)
-	return &result, nil
 }
 
 // ListConversationEventLogs 分页查询管理员对话事件日志。
@@ -3201,6 +3283,7 @@ func toMessageDomain(item models.Message) domainconversation.Message {
 		Role:             item.Role,
 		ContentType:      item.ContentType,
 		Content:          item.Content,
+		ReasoningContent: item.ReasoningContent,
 		BranchReason:     item.BranchReason,
 		SourceMessageID:  item.SourceMessageID,
 		TokenUsage:       item.TokenUsage,
@@ -3249,6 +3332,7 @@ func toMessageModel(item *domainconversation.Message) models.Message {
 		Role:             item.Role,
 		ContentType:      item.ContentType,
 		Content:          item.Content,
+		ReasoningContent: item.ReasoningContent,
 		BranchReason:     item.BranchReason,
 		SourceMessageID:  item.SourceMessageID,
 		TokenUsage:       item.TokenUsage,

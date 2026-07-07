@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	model "github.com/DEEIX-AI/DEEIX-Chat/backend/internal/infra/persistence/models"
 	"github.com/DEEIX-AI/DEEIX-Chat/backend/internal/repository"
@@ -169,6 +168,55 @@ func TestListMessageAncestorsUntilReportsMissingBoundary(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].PublicID != "msg_1" {
 		t.Fatalf("expected available ancestor path, got %#v", got)
+	}
+}
+
+func TestUpdateAssistantMessageCompletionPersistsReasoningContent(t *testing.T) {
+	db := openConversationRepositoryTestDB(t)
+	repo := NewRepo(db)
+	ctx := context.Background()
+
+	conversation := model.Conversation{
+		UserID:     1,
+		PublicID:   "conv_reasoning_completion",
+		Title:      "reasoning completion",
+		LabelsJSON: "[]",
+		SessionKey: "session_reasoning_completion",
+		Status:     "active",
+	}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	message := model.Message{
+		ConversationID: conversation.ID,
+		UserID:         1,
+		PublicID:       "msg_reasoning_completion",
+		Role:           "assistant",
+		ContentType:    "text",
+		Content:        "",
+		BranchReason:   "default",
+		Status:         "pending",
+	}
+	if err := db.Create(&message).Error; err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	err := repo.UpdateAssistantMessageCompletion(ctx, message.ID, repository.AssistantMessageCompletionUpdate{
+		ContentType:      "text",
+		Content:          "final answer",
+		ReasoningContent: "stored reasoning",
+		Status:           "success",
+	})
+	if err != nil {
+		t.Fatalf("UpdateAssistantMessageCompletion() error = %v", err)
+	}
+
+	got, err := repo.GetMessageByID(ctx, conversation.ID, message.ID)
+	if err != nil {
+		t.Fatalf("GetMessageByID() error = %v", err)
+	}
+	if got.Content != "final answer" || got.ReasoningContent != "stored reasoning" {
+		t.Fatalf("unexpected completed message: %#v", got)
 	}
 }
 
@@ -355,68 +403,6 @@ func TestListConversationsByUserSearchesMetadataProjectsAndMessages(t *testing.T
 				t.Fatalf("items = %#v, want %q", items, tt.wantID)
 			}
 		})
-	}
-}
-
-func TestGetLatestConversationRunModelUsesLatestSuccessfulUserRun(t *testing.T) {
-	db := openConversationRepositoryTestDB(t)
-	repo := NewRepo(db)
-	ctx := context.Background()
-	now := time.Now()
-
-	runs := []model.ConversationRun{
-		{
-			UserID:            1,
-			ConversationID:    11,
-			RunID:             "run_old_success",
-			PlatformModelName: "gpt-old",
-			Status:            "success",
-			StartedAt:         now.Add(-5 * time.Minute),
-		},
-		{
-			UserID:            2,
-			ConversationID:    21,
-			RunID:             "run_other_user",
-			PlatformModelName: "gpt-other",
-			Status:            "success",
-			StartedAt:         now.Add(-4 * time.Minute),
-		},
-		{
-			UserID:            1,
-			ConversationID:    12,
-			RunID:             "run_latest_success",
-			PlatformModelName: "gpt-latest",
-			Status:            "success",
-			StartedAt:         now.Add(-3 * time.Minute),
-		},
-		{
-			UserID:            1,
-			ConversationID:    13,
-			RunID:             "run_error",
-			PlatformModelName: "gpt-error",
-			Status:            "error",
-			StartedAt:         now.Add(-2 * time.Minute),
-		},
-		{
-			UserID:         1,
-			ConversationID: 14,
-			RunID:          "run_empty_model",
-			Status:         "success",
-			StartedAt:      now.Add(-1 * time.Minute),
-		},
-	}
-	for _, run := range runs {
-		if err := db.Create(&run).Error; err != nil {
-			t.Fatalf("create run %q: %v", run.RunID, err)
-		}
-	}
-
-	got, err := repo.GetLatestConversationRunModel(ctx, 1)
-	if err != nil {
-		t.Fatalf("GetLatestConversationRunModel() error = %v", err)
-	}
-	if got == nil || got.PlatformModelName != "gpt-latest" {
-		t.Fatalf("latest model = %#v, want gpt-latest", got)
 	}
 }
 

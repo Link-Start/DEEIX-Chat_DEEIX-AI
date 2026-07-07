@@ -30,6 +30,7 @@ import type {
   ReorderConversationProjectsRequest,
   SendMessageRequest,
   MediaImageRequest,
+  MediaVideoRequest,
   SendMessageResult,
   SetConversationArchiveRequest,
   SetConversationProjectRequest,
@@ -535,6 +536,14 @@ export async function exportConversation(
   );
 }
 
+export async function exportAllConversations(accessToken: string): Promise<Blob> {
+  const response = await authedFetch("/api/v1/conversations/export", { accessToken });
+  if (!response.ok) {
+    throw new Error(`export failed: ${response.status}`);
+  }
+  return response.blob();
+}
+
 export async function renameConversation(
   accessToken: string,
   conversationPublicID: string,
@@ -1030,6 +1039,21 @@ export async function streamImageEdit(
     accessToken,
     conversationPublicID,
     "/media/images/edits/stream",
+    payload,
+    options,
+  );
+}
+
+export async function streamVideoGeneration(
+  accessToken: string,
+  conversationPublicID: string,
+  payload: MediaVideoRequest,
+  options: ConversationStreamOptions = {},
+): Promise<SendMessageResult> {
+  return postConversationStream(
+    accessToken,
+    conversationPublicID,
+    "/media/videos/generations/stream",
     payload,
     options,
   );
